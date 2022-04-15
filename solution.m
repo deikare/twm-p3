@@ -7,10 +7,7 @@ rng('default') ;
 cnt_train = 70 ;
 
 % Liczba obrazów testowych na klasę
-cnt_test = 15;
-
-% Liczba obrazów walidacyjnych na klasę
-cnt_val = 15;
+cnt_test = 30;
 
 % Wybrane klasy obiektów
 img_classes = {'deli', 'greenhouse', 'bathroom'};
@@ -37,7 +34,7 @@ imds_full = imageDatastore("Images/", "IncludeSubfolders", true, "LabelSource", 
 %countEachLabel(imds_full)
 
 % Wybór przykładowych klas i podział na zbiór treningowy i testowy
-[imds, imtest, imval] = splitEachLabel(imds_full, cnt_train, cnt_test, cnt_val, 'Include', img_classes);
+[imds, imtest, imval] = splitEachLabel(imds_full, cnt_train, cnt_test, 'Include', img_classes);
 
 % Wyznaczenie punktów charakterystycznych we wszystkich obrazach zbioru treningowego
 files_cnt = length(imds.Files);
@@ -76,56 +73,65 @@ end
 % Wizualizacja wyliczonych słów
 
 % Wyznaczenie histogramów słów dla każdego obrazu treningowego
-file_hist = zeros(files_cnt, words_cnt);
+training_hist = zeros(files_cnt, words_cnt);
 for i=1:files_cnt
-    file_hist(i,:) = histcounts(idx(file_ids(:,1) == i), (1:words_cnt+1)-0.5, 'Normalization', 'probability');
-end
-% Wyznaczenie histogramów słów dla każdego obrazu walidacyjnego
-val_hist = zeros(length(imval.Files), words_cnt);
-for i=1:length(imval.Files)
-    I = readImage(imval.Files{i});
-    pts = getFeaturePoints(I, feats_det, feats_uniform);
-    feats = extractFeatures(rgb2gray(I), pts);
-    val_hist(i,:) = wordHist(feats, words);
+    training_hist(i,:) = histcounts(idx(file_ids(:,1) == i), (1:words_cnt+1)-0.5, 'Normalization', 'probability');
 end
 
 % Wyznaczenie histogramów słów dla każdego obrazu testowego
-test_hist = zeros(length(imtest.Files), words_cnt);
+testing_hist = zeros(length(imtest.Files), words_cnt);
 for i=1:length(imtest.Files)
     I = readImage(imtest.Files{i});
     pts = getFeaturePoints(I, feats_det, feats_uniform);
     feats = extractFeatures(rgb2gray(I), pts);
-    test_hist(i,:) = wordHist(feats, words);
+    testing_hist(i,:) = wordHist(feats, words);
 end
 
-%% wieloklasowy klasyfikator SVM z jądrem Gaussa
+training_hist = [training_hist, ones(size(training_hist, 1), 1)];
+testing_hist = [testing_hist, ones(size(testing_hist, 1), 1)];
+
+%% zad 1
 t = templateSVM("KernelFunction", "gaussian");
-Mdl = fitcecoc(file_hist, imds.Labels, 'Learners', t);
-[label,NegLoss,PBScore] = predict(Mdl, test_hist);
-numberOfMissmatches(imtest.Labels, label)
-percentageOfMissmatches(imtest.Labels, label)
+model = fitcecoc(training_hist, imds.Labels, 'Learners', t);  %fitcecoc tworzy wieloklasowy svm
 
-cMdl = crossval(Mdl);
+disp('zad1');
+trainError = getMissclassifiedRate(model, training_hist, imds.Labels) %odsetek błędnych klasyfikacji zbioru treningowego
+testError = getMissclassifiedRate(model, testing_hist, imtest.Labels) %oraz zbioru testowego
 
-[label,NegLoss,PBScore] = predict(cMdl, test_hist);
-numberOfMissmatches(imtest.Labels, label)
-percentageOfMissmatches(imtest.Labels, label)
+%% zad 2.1 
+kVector = 2 : 20;
+
+[k, fig] = findBestK(kVector, model);
+disp('zad 2.1');
+k
+
+saveas(fig, 'zad_2_1.png');
+
+%% zad 2.2
+gammas = logspace(-4, 1, 25);
+costs = logspace(-1, 2, 25);
+[C, gamma, modelGridSearch, minGridSearchCrossValError, errors] = gridSearch(training_hist, imds.Labels, k, costs, gammas);
+
+disp('zad 2.2');
+trainErrorGridSearch = getMissclassifiedRate(modelGridSearch, training_hist, imds.Labels)
+testErrorGridSearch = getMissclassifiedRate(modelGridSearch, testing_hist, imtest.Labels)
+minGridSearchCrossValError
+C
+gamma
+
+%% zad 2.3
+fig = cGammaErrorsPlotter(costs, gammas, errors);
+
+saveas(fig, 'zad_2_3.png');
+
+%% zad 3
+autoModel = getAutoBestParams(training_hist, imds.Labels);
+
+disp('zad 3');
+trainErrorAutoModel = getMissclassifiedRate(autoModel, training_hist, imds.Labels)
+testErrorAutoModel = getMissclassifiedRate(autoModel, testing_hist, imtest.Labels)
 
 %% Funkcje pomocnicze
-
-function result = percentageOfMissmatches(labels, prediction)
-    result = numberOfMissmatches(labels, prediction) * 100 / length(labels);
-end
-
-function result = numberOfMissmatches(labels, prediction)
-    result = 0;
-    for i = 1 : size(labels)
-        if labels(i) ~= prediction(i)
-            result = result + 1;
-        end
-    end
-end
-
 function P = getPatch(I, pt, scale, scale_factor)
     x1 = round(pt(1) - 0.5*scale*scale_factor);
     x2 = round(pt(1) + 0.5*scale*scale_factor);
